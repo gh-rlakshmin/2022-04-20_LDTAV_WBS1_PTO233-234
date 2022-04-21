@@ -1,0 +1,5 @@
+ship_temp,donor_type,n,con_sum_1,con_sum_6,con_sum_8,con_sum_9,con_sum_10,con_per_1,con_per_6,con_per_8,con_per_9,con_per_10
+Summer,HD,15,15,15,15,15,NA,100,100,100,100,NA
+Summer,MM,15,15,15,15,NA,15,100,100,100,NA,100
+Winter,HD,15,15,14,14,NA,14,100,93.33,93.33,NA,93.33
+Winter,MM,15,15,14,14,NA,12,100,93.33,93.33,NA,80

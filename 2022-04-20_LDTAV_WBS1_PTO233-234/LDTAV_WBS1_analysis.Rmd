@@ -1,0 +1,324 @@
+---
+title: "LDTAV_WBS1_analysis"
+author: "RL"
+date: '2022-04-20'
+output: html_document
+---
+
+```{r load_libraries, include=FALSE}
+library(tidyverse)
+library(ggpubr)
+library(patchwork)
+```
+
+```{r load_data, warning=FALSE, include=FALSE}
+
+conc_233 <- read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO233_20220419_195703/calibrated/avg_result.log10.tsv')
+conc_234 <- read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO234_20220419_203414/calibrated/avg_result.log10.tsv')
+
+call_233 <- read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO233_20220419_195703/call/call.tsv')
+call_234 <- read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO234_20220419_203414/call/call.tsv')
+
+meta_233 <-  read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO233_20220419_195703/meta/metadata.tsv')%>%
+  select('LID','specimen_id_unregistered','proteomics_id','batch','comment')
+
+meta_234 <-  read_tsv('/ghds/screening/data/proteomics/luminex/batch/20220419_PTO234_20220419_203414/meta/metadata.tsv') %>%
+  select('LID','specimen_id_unregistered','proteomics_id','batch','comment')
+
+manifest <- read_csv('L2 LDT AV Whole Blood Studies Tracker - WBS1_Sample_Key.csv')
+```
+
+```{r gather_pies1_data, warning = FALSE, include=FALSE}
+c_m_233 <- left_join(meta_233,conc_233,by =c("LID"="Sample"))
+s_m_233 <- left_join(meta_233,call_233, by = c("LID"="Sample"))
+
+c_m_234 <- left_join(meta_234,conc_234,by =c("LID"="Sample"))
+s_m_234 <- left_join(meta_234,call_234, by = c("LID"="Sample"))
+
+c_m_wbs <-rbind(c_m_233,c_m_234)
+s_m_wbs <-rbind(s_m_233,s_m_234)
+
+conc_wbs <- left_join(manifest,c_m_wbs,
+                       by=c("id_lum"="specimen_id_unregistered")) %>%
+            gather(key="marker",value="log10conc",c(IL6:AGER))
+call_wbs <- left_join(manifest,s_m_wbs,by=c("id_lum"="specimen_id_unregistered"))
+
+
+call_spread <- call_wbs %>%
+          select(patient_id, Threshold,ship_temp,donor_type,MMtype_target,pl_iso_day,Score,Call) %>%
+          pivot_wider(values_from = c("Score","Call"),
+                      names_from=pl_iso_day)
+
+write_csv(call_wbs,"2022-04-20 WBS1 protein call and scores.csv")
+write_csv(conc_wbs,"2022-04-20 WBS1 protein concentrations.csv")
+
+
+##optional 
+conc_spread <- conc_wbs %>%
+  select(patient_id,sample_type, study_condition, marker, log10conc) %>%
+  pivot_wider(values_from = log10conc, names_from = study_condition)
+```
+
+```{r concordance_calcs, warning = FALSE}
+call_d1 <- call_spread %>%
+  select(c(patient_id,Call_1))
+
+call_con <- left_join(call_wbs,call_d1,by=c("patient_id"= "patient_id")) %>%
+  mutate(con = as.double(if_else(Call==Call_1,1,0))) 
+
+
+donor_ct <- call_con %>%
+  group_by(ship_temp,donor_type,pl_iso_day) %>%
+  count(ship_temp)
+
+con_sum <- left_join(call_con,donor_ct,by=c("ship_temp"="ship_temp",
+                                           "donor_type"="donor_type",
+                                           "pl_iso_day"="pl_iso_day")) %>%
+  group_by(ship_temp,donor_type,pl_iso_day,n) %>%
+  summarise(con_sum=sum(con)) %>%
+  mutate(con_per = round(con_sum/n * 100,2)) %>%
+  pivot_wider(values_from = c(con_sum, con_per),names_from = pl_iso_day)
+
+write_csv(con_sum,"2022-04-20_Call Concordance to Day1.csv")
+```
+
+
+```{r exploratory_score_plots, warning=FALSE, echo=FALSE}
+## score plots
+
+sc_plot <- call_wbs %>%
+          mutate(Timepoint = factor(timepoint, levels= c("D1","D6", "D8","D9", "D10"))) %>%
+          ggplot(aes(x=patient_id, y=Score)) +
+          geom_point(aes(color=Timepoint, shape=MMtype_target)) +
+          geom_hline(aes(yintercept = Threshold),linetype=2) +  
+          theme(legend.position="top") +
+          theme_bw(base_size = 14) +
+          facet_grid(rows=vars(ship_temp),
+                     cols=vars(donor_type), 
+                     scales = "free")+
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()  ) 
+sc_plot
+
+sc_summer_HD <- call_wbs %>%
+          filter(ship_temp=="Summer") %>%
+          filter(donor_type=="HD") %>%
+          ggplot(aes(x=pl_iso_day, y=Score)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          geom_hline(aes(yintercept = Threshold),linetype=2) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Score Stability of Healthy Donor Samples (Summer)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+sc_winter_HD <- call_wbs %>%
+          filter(ship_temp=="Winter") %>%
+          filter(donor_type=="HD") %>%
+          ggplot(aes(x=pl_iso_day, y=Score)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          geom_hline(aes(yintercept = Threshold),linetype=2) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Score Stability of Healthy Donor Samples (Winter)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+sc_summer_MM <- call_wbs %>%
+          filter(ship_temp=="Summer") %>%
+          filter(donor_type=="MM") %>%
+          ggplot(aes(x=pl_iso_day, y=Score)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_hline(aes(yintercept = Threshold),linetype=2) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Score Stability of Manipulated/Positive Donor Samples (Summer)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+sc_winter_MM <- call_wbs %>%
+          filter(ship_temp=="Winter") %>%
+          filter(donor_type=="MM") %>%
+          ggplot(aes(x=pl_iso_day, y=Score)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_hline(aes(yintercept = Threshold),linetype=2) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Score Stability of Manipulated/Positive Donor Samples (Winter)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+sc_summer_HD
+sc_summer_MM
+sc_winter_HD
+sc_winter_MM
+
+sc_plots <- sc_summer_HD / sc_summer_MM / sc_winter_HD / sc_winter_MM
+sc_plots
+
+
+donorType <- c(`HD` = "Unmanipulated Healthy",`MM` = "Manipulated With CRC Plasma")
+sc_box <- call_wbs %>%
+          mutate(MM_target = factor(MMtype_target,levels=c("none","cfDNA_1maf",
+                                             "protein_1.62IL6","protein_100CEA"))) %>%
+          ggplot(aes(x=pl_iso_day, y=Score)) +
+          geom_point(aes(color=timepoint, shape=MM_target)) +
+          geom_line(aes( #color=patient_id.x,
+                        group=patient_id),
+                    alpha=0.2, linetype=2)+
+         # geom_boxplot(aes(color=timepoint)) +
+          geom_hline(aes(yintercept = Threshold),linetype=1, alpha=0.5, color="red") +  
+          theme(legend.position="top") +
+          theme_bw(base_size = 14) +
+          facet_grid(rows=vars(ship_temp),
+                     cols=vars(donor_type), 
+                     scales = "free",
+                     labeller = labeller(donor_type=donorType))+
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()  ) 
+sc_box
+
+```
+
+```{r, concentration plots, warning = FALSE, echo=FALSE}
+conc_summer_hd <- conc_wbs %>%
+          filter(ship_temp=="Summer") %>%
+          filter(donor_type=="HD") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(rows=vars(marker),cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Conc. Stability of Healthy Donor Samples (Summer)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+conc_summer_mm <- conc_wbs %>%
+          filter(ship_temp=="Summer") %>%
+          filter(donor_type=="MM") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(rows=vars(marker),cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Conc. Stability of Manipulated/Positive Donor Samples (Summer)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()) 
+
+conc_winter_hd <- conc_wbs %>%
+          filter(ship_temp=="Winter") %>%
+          filter(donor_type=="HD") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          theme(legend.position="top") +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(rows=vars(marker),cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Conc. Stability of Healthy Donor Samples (Winter)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+  
+conc_winter_mm <- conc_wbs %>%
+          filter(ship_temp=="Winter") %>%
+          filter(donor_type=="MM") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_point(aes(color=pl_iso_day),show.legend = FALSE) +
+          geom_line(aes(group=patient_id),alpha=0.1) +
+          theme(legend.position="top") +
+          scale_x_continuous(breaks = c(0,1,6,8,10)) +
+          facet_grid(rows=vars(marker),cols=vars(patient_id),scales = "free") +
+          ggtitle("Protein Conc. Stability of Manipulated/Positive Donor Samples (Winter)") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank())
+
+
+conc_summer_hd
+conc_summer_mm
+conc_winter_hd
+conc_winter_mm
+
+conc_summer2 <- conc_wbs %>%
+          filter(ship_temp=="Summer") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          mutate(MM_target = factor(MMtype_target,levels=c("none","cfDNA_1maf",
+                                             "protein_1.62IL6","protein_100CEA"))) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_line(aes( #color=patient_id.x,
+                        group=patient_id),
+                    alpha=0.1, linetype=2)+
+          geom_point(aes(color=timepoint, shape=MM_target)) +
+           stat_summary(fun.y = mean, 
+               geom = 'line',
+               linetype=1,
+               aes(group = ship_temp,
+                   color="trendline")) +
+          stat_cor() +
+          theme(legend.position="top") +
+          theme_bw(base_size = 14) +
+          facet_grid(rows=vars(marker),
+                     cols=vars(donor_type), 
+                     scales = "free",
+                     labeller = labeller(donor_type=donorType)) +
+          ggtitle("Protein Concentration Over RT Hold Time Post-Summer Shipping")+
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()  ) 
+
+
+conc_winter2 <- conc_wbs %>%
+          filter(ship_temp=="Winter") %>%
+          filter(marker %in% c("AGER","IL6","MMP8","CEACAM5","TRAILR2")) %>%
+          mutate(MM_target = factor(MMtype_target,levels=c("none","cfDNA_1maf",
+                                             "protein_1.62IL6","protein_100CEA"))) %>%
+          ggplot(aes(x=pl_iso_day, y=log10conc)) +
+          geom_line(aes( #color=patient_id.x,
+                        group=patient_id),
+                    alpha=0.1, linetype=2)+
+          geom_point(aes(color=timepoint, shape=MM_target)) +
+           stat_summary(fun.y = mean, 
+               geom = 'line',
+               linetype=1,
+               aes(group = ship_temp,
+                   color="trendline")) +
+          stat_cor() +
+          theme(legend.position="top") +
+          theme_bw(base_size = 14) +
+          facet_grid(rows=vars(marker),
+                     cols=vars(donor_type), 
+                     scales = "free",
+                     labeller = labeller(donor_type=donorType)) +
+          ggtitle("Protein Concentration Over RT Hold Time Post-Winter Shipping")+
+          theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+                panel.grid.major = element_blank(),
+                panel.grid.minor = element_blank()  ) 
+
+conc_summer2
+conc_winter2
+
+```
